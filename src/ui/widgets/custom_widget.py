@@ -4,7 +4,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QFrame
 from qfluentwidgets import FluentIconBase, Theme, qconfig
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+from utils.resource_path import res
 
 
 class _Widget(QFrame):
@@ -36,6 +36,7 @@ class SidebarIcon(FluentIconBase, Enum):
 
     FILE_HASH = "file_hash"
     JSON = "json"
+    QRCODE = "qrcode"
 
     def path(self, theme: Theme = Theme.AUTO) -> str:
         """
@@ -47,7 +48,5 @@ class SidebarIcon(FluentIconBase, Enum):
         if theme == Theme.AUTO:
             theme = qconfig.theme  # 解析为 Theme.LIGHT 或 Theme.DARK
 
-        base = _PROJECT_ROOT / "resources" / "icon" / "sidebar_button" / self.value
-        if theme == Theme.DARK:
-            return str(base) + "_white.svg"
-        return str(base) + "_black.svg"
+        suffix = "_white.svg" if theme == Theme.DARK else "_black.svg"
+        return res(f"icon/sidebar_button/{self.value}{suffix}")

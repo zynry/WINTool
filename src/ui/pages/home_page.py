@@ -6,10 +6,10 @@ from qfluentwidgets import FluentWindow, NavigationItemPosition
 
 from ui.pages.fhash_page import FileHashPage
 from ui.pages.json_page import JsonPage
+from ui.pages.qrcode_page import QRCodePage
 from ui.pages.settings_page import SettingsPage
 from ui.widgets.custom_widget import SidebarIcon
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+from utils.resource_path import res
 
 
 class HomePage(FluentWindow):
@@ -20,6 +20,7 @@ class HomePage(FluentWindow):
 
         self.CFHash = FileHashPage(self)
         self.jsonInterface = JsonPage(self)
+        self.qrInterface = QRCodePage(self)
         self.settingInterface = SettingsPage(self)
 
         self.setui()
@@ -29,6 +30,7 @@ class HomePage(FluentWindow):
 
         self.addSubInterface(self.CFHash, SidebarIcon.FILE_HASH, "文件哈希值")
         self.addSubInterface(self.jsonInterface, SidebarIcon.JSON, "JSON 格式化")
+        self.addSubInterface(self.qrInterface, SidebarIcon.QRCODE, "二维码解码")
 
         self.addSubInterface(
             self.settingInterface,
@@ -39,6 +41,5 @@ class HomePage(FluentWindow):
 
     def initWindow(self):
         self.resize(800, 700)
-        icon_path = _PROJECT_ROOT / "resources" / "icon" / "app_icon_D.svg"
-        self.setWindowIcon(QIcon(str(icon_path)))
+        self.setWindowIcon(QIcon(res("icon/app_icon_D.svg")))
         self.setWindowTitle("WINTools")
