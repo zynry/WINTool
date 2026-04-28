@@ -32,6 +32,7 @@ WINTool/
 │   │   ├── pages/
 │   │   │   ├── home_page.py     # 主窗口（FluentWindow + 侧边栏导航）
 │   │   │   ├── fhash_page.py    # 文件哈希值页面
+│   │   │   ├── json_page.py     # JSON 格式化页面
 │   │   │   └── settings_page.py # 应用设置页面
 │   │   ├── qss/
 │   │   │   ├── dark/
@@ -54,7 +55,7 @@ WINTool/
 ### `src/ui/pages/home_page.py`
 主窗口继承自 `FluentWindow`，负责：
 - 侧边栏导航栏配置
-- 子界面注册（文件哈希值、应用设置）
+- 子界面注册（文件哈希值、JSON 格式化、应用设置）
 
 ### `src/services/hash_service.py`
 **哈希计算服务层**，核心能力：
@@ -75,10 +76,16 @@ WINTool/
 - 支持从列表中移除单个文件或一键清空
 - 使用 `QScrollArea` + `qfluentwidgets.ScrollBar` 组合，既解决滚动回弹问题又保持 Fluent 风格滚动条
 
-### `src/ui/pages/settings_page.py`
-**应用设置**页面，已支持：
-- **主题模式**：浅色 / 深色 / 跟随系统设置
-- **主题色**：实时调整应用强调色（默认 `#ff931daa`）
+### `src/ui/pages/json_page.py`
+**JSON 格式化**功能页面，已完整实现：
+- **输入 / 输出分栏**：使用 `QSplitter` 垂直分割，可拖动调整输入区与结果区比例
+- **卡片式布局**：输入区和输出区均采用圆角卡片包裹，主题自适应背景
+- **格式化**：将压缩或凌乱的 JSON 一键排版为带缩进的可读格式
+- **压缩**：将 JSON 去除所有空白，压缩为最小体积
+- **复制结果**：一键将格式化后的内容复制到剪贴板
+- **实时字符统计**：底部状态栏实时显示输入字符数
+- **错误提示**：输入非法 JSON 时，底部状态栏变红并弹出 `InfoBar` 错误提示
+- 等宽字体显示，便于开发者阅读和比对
 
 ### `src/ui/widgets/custom_widget.py`
 - **`_Widget`**：所有子界面的基类，去除 `QFrame` 默认边框与背景，使 `FluentWindow` 背景能正确透传。
@@ -97,4 +104,5 @@ qfluentwidgets 的配置文件，定义：
 | 应用框架 & 导航 | 已完成 |
 | 主题 & 个性化设置 | 已完成 |
 | 文件哈希值功能 | 已完成 |
+| JSON 格式化 | 已完成 |
 | 其他工具模块 | 预留扩展 |

@@ -5,6 +5,7 @@ from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import FluentWindow, NavigationItemPosition
 
 from ui.pages.fhash_page import FileHashPage
+from ui.pages.json_page import JsonPage
 from ui.pages.settings_page import SettingsPage
 from ui.widgets.custom_widget import SidebarIcon
 
@@ -18,6 +19,7 @@ class HomePage(FluentWindow):
         super().__init__()
 
         self.CFHash = FileHashPage(self)
+        self.jsonInterface = JsonPage(self)
         self.settingInterface = SettingsPage(self)
 
         self.setui()
@@ -26,6 +28,7 @@ class HomePage(FluentWindow):
     def setui(self):
 
         self.addSubInterface(self.CFHash, SidebarIcon.FILE_HASH, "文件哈希值")
+        self.addSubInterface(self.jsonInterface, SidebarIcon.JSON, "JSON 格式化")
 
         self.addSubInterface(
             self.settingInterface,

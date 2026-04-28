@@ -35,6 +35,7 @@ class SidebarIcon(FluentIconBase, Enum):
     """
 
     FILE_HASH = "file_hash"
+    JSON = "json"
 
     def path(self, theme: Theme = Theme.AUTO) -> str:
         """
