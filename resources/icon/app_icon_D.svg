@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bgD" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6441a5"/>
+      <stop offset="100%" stop-color="#0078d4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 紫蓝渐变圆角方块背景 -->
+  <rect width="256" height="256" rx="48" fill="url(#bgD)"/>
+
+  <!-- 8齿白色齿轮，居中 -->
+  <g transform="translate(128,128)">
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(45)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(90)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(135)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(180)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(225)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(270)"/>
+    <rect fill="white" x="-13" y="-100" width="26" height="38" rx="6" transform="rotate(315)"/>
+
+    <!-- 齿轮主体 -->
+    <circle r="74" fill="white"/>
+
+    <!-- 中心镂空（渐变色） -->
+    <circle r="28" fill="url(#bgD)"/>
+  </g>
+</svg>

@@ -1,0 +1,8 @@
+Window {
+    background-color: rgb(249, 249, 249);
+}
+
+Window>QLabel {
+    color: --ThemeColorPrimary;   /* 使用组件库的主题色 */
+    font: 14px --FontFamilies;    /* 使用组件库的字体 */
+}

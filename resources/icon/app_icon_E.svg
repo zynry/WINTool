@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Dark background -->
+  <rect width="256" height="256" rx="48" fill="#1a1a2e"/>
+
+  <!-- Outer accent ring -->
+  <circle cx="128" cy="128" r="108" fill="none" stroke="#ff8c00" stroke-width="4"/>
+
+  <!-- Orange gear -->
+  <g transform="translate(128,128)">
+    <!-- 6 teeth -->
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7"/>
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7" transform="rotate(60)"/>
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7" transform="rotate(120)"/>
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7" transform="rotate(180)"/>
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7" transform="rotate(240)"/>
+    <rect fill="#ff8c00" x="-15" y="-102" width="30" height="42" rx="7" transform="rotate(300)"/>
+
+    <!-- Gear body -->
+    <circle r="74" fill="#ff8c00"/>
+
+    <!-- Center hole -->
+    <circle r="28" fill="#1a1a2e"/>
+  </g>
+</svg>
