@@ -10,7 +10,6 @@ from __future__ import annotations
 import csv
 import io
 import os
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,14 +17,18 @@ from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+import zxingcpp
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import (
     QClipboard,
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QImage,
     QKeyEvent,
+    QKeySequence,
     QPixmap,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -37,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QSplitter,
     QTableWidget,
+    QTextEdit,
     QVBoxLayout,
 )
 
@@ -63,7 +67,7 @@ if TYPE_CHECKING:
 # ── 数据模型 ──────────────────────────────────────────
 @dataclass
 class DecodeResult:
-    uid: str         # 唯一标识（与 img_list item 对应）
+    idx: int         # 批次内索引
     filename: str
     filepath: str
     content: str
@@ -72,44 +76,75 @@ class DecodeResult:
 
 # ── 后台解码线程 ──────────────────────────────────────
 class DecodeWorker(QThread):
-    finished = Signal(list)  # list[tuple[str, DecodeResult]]  (uid, result)
+    finished = Signal(list)  # list[DecodeResult]
     progress = Signal(int, int)  # current, total
 
-    def __init__(self, tasks: list[tuple[str, str]], parent=None):
+    def __init__(self, paths: list[str], parent=None):
         super().__init__(parent)
-        self.tasks = tasks  # [(uid, filepath), ...]
+        self.paths = paths
 
     def run(self):
-        results: list[tuple[str, DecodeResult]] = []
-        detector = cv2.QRCodeDetector()
+        results: list[DecodeResult] = []
+        cv_detector = cv2.QRCodeDetector()
 
-        def decode_one(task: tuple[str, str]) -> tuple[str, DecodeResult]:
-            uid, fp = task
+        def _opencv_try_decode(img) -> str | None:
+            """OpenCV 回退解码（含预处理）。"""
+            data, _, _ = cv_detector.detectAndDecode(img)
+            if data:
+                return data
+            ok, decoded, _, _ = cv_detector.detectAndDecodeMulti(img)
+            if ok and decoded:
+                texts = [d for d in decoded if d]
+                if texts:
+                    return "\n".join(texts)
+
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            variants = [
+                gray,
+                cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2),
+                cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                cv2.GaussianBlur(gray, (5, 5), 0),
+                cv2.dilate(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], np.ones((2, 2), np.uint8), iterations=1),
+                cv2.erode(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], np.ones((2, 2), np.uint8), iterations=1),
+                cv2.bitwise_not(gray),
+            ]
+            for variant in variants:
+                data, _, _ = cv_detector.detectAndDecode(variant)
+                if data:
+                    return data
+                ok, decoded, _, _ = cv_detector.detectAndDecodeMulti(variant)
+                if ok and decoded:
+                    texts = [d for d in decoded if d]
+                    if texts:
+                        return "\n".join(texts)
+            return None
+
+        def decode_one(idx: int, fp: str) -> DecodeResult:
             fname = os.path.basename(fp)
             try:
                 img = cv2.imread(fp, cv2.IMREAD_COLOR)
                 if img is None:
-                    return uid, DecodeResult(uid, fname, fp, "", "读取失败")
+                    return DecodeResult(idx, fname, fp, "", "读取失败")
 
-                # 尝试多码检测
-                ok, decoded, _, _ = detector.detectAndDecodeMulti(img)
-                if ok and decoded:
-                    texts = [d for d in decoded if d]
+                # 优先使用 zxing-cpp（识别率更高）
+                zx_results = zxingcpp.read_barcodes(img)
+                if zx_results:
+                    texts = [r.text for r in zx_results if r.text]
                     if texts:
-                        return uid, DecodeResult(uid, fname, fp, "\n".join(texts), "成功")
+                        return DecodeResult(idx, fname, fp, "\n".join(texts), "成功")
 
-                # 回退单码检测
-                data, _, _ = detector.detectAndDecode(img)
+                # 回退 OpenCV
+                data = _opencv_try_decode(img)
                 if data:
-                    return uid, DecodeResult(uid, fname, fp, data, "成功")
+                    return DecodeResult(idx, fname, fp, data, "成功")
 
-                return uid, DecodeResult(uid, fname, fp, "", "未检测到")
+                return DecodeResult(idx, fname, fp, "", "未检测到")
             except Exception as e:
-                return uid, DecodeResult(uid, fname, fp, "", f"失败: {e}")
+                return DecodeResult(idx, fname, fp, "", f"失败: {e}")
 
-        total = len(self.tasks)
+        total = len(self.paths)
         with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
-            for i, result in enumerate(pool.map(decode_one, self.tasks)):
+            for i, result in enumerate(pool.map(lambda args: decode_one(*args), enumerate(self.paths))):
                 results.append(result)
                 self.progress.emit(i + 1, total)
 
@@ -121,7 +156,6 @@ class ImageDropList(QListWidget):
     """支持文件拖拽和 Ctrl+V 粘贴的图片列表。"""
 
     filesDropped = Signal(list)  # list[tuple[str, str]]  (uid, filepath)
-    itemsDeleted = Signal(list)  # list[str] 被删除的 uid 列表
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -131,7 +165,7 @@ class ImageDropList(QListWidget):
         self.setSpacing(8)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setDragEnabled(False)
-        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -155,8 +189,6 @@ class ImageDropList(QListWidget):
     def keyPressEvent(self, event: QKeyEvent):
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
             self._paste_from_clipboard()
-        elif event.key() == Qt.Key.Key_Delete:
-            self._delete_selected()
         else:
             super().keyPressEvent(event)
 
@@ -172,27 +204,14 @@ class ImageDropList(QListWidget):
         elif mime and mime.hasUrls():
             paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
             if paths:
-                tasks = [(str(uuid.uuid4()), p) for p in paths]
-                self.filesDropped.emit(tasks)
+                self.filesDropped.emit(paths)
 
     def _save_clipboard_image(self, img: QImage):
         """将剪贴板图片保存到临时文件并触发解码。"""
         from tempfile import gettempdir
-        uid = str(uuid.uuid4())
-        tmp_path = os.path.join(gettempdir(), f"qrcode_paste_{uid}.png")
+        tmp_path = os.path.join(gettempdir(), "qrcode_paste.png")
         img.save(tmp_path)
-        self.filesDropped.emit([(uid, tmp_path)])
-
-    def _delete_selected(self):
-        deleted_uids: list[str] = []
-        for item in self.selectedItems():
-            uid = item.data(Qt.ItemDataRole.UserRole)
-            if uid:
-                deleted_uids.append(uid)
-            row = self.row(item)
-            self.takeItem(row)
-        if deleted_uids:
-            self.itemsDeleted.emit(deleted_uids)
+        self.filesDropped.emit([tmp_path])
 
 
 # ── 主页面 ────────────────────────────────────────────
@@ -201,10 +220,52 @@ class QRCodePage(_Widget):
 
     def __init__(self, parent=None):
         super().__init__("QRCodePage", parent=parent)
-        self._results: dict[str, DecodeResult] = {}
+        self._results: list[DecodeResult] = []
         self._worker: DecodeWorker | None = None
         self._setup_ui()
         self._connect_signals()
+        self.setAcceptDrops(True)
+
+        # 全局 Ctrl+V 快捷键（不受焦点影响）
+        self._paste_shortcut = QShortcut(
+            QKeySequence("Ctrl+V"), self, self._paste_from_clipboard
+        )
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        if paths:
+            self._add_images(paths)
+        event.acceptProposedAction()
+
+    def _paste_from_clipboard(self):
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return
+        mime = clipboard.mimeData()
+        if mime and mime.hasImage():
+            img = clipboard.image()
+            if not img.isNull():
+                from tempfile import gettempdir
+                tmp_path = os.path.join(gettempdir(), "qrcode_paste.png")
+                img.save(tmp_path)
+                self._add_images([tmp_path])
+        elif mime and mime.hasUrls():
+            paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+            if paths:
+                self._add_images(paths)
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -228,7 +289,7 @@ class QRCodePage(_Widget):
         control_layout.addWidget(self.export_combo)
 
         self.clear_btn = ToolButton(FluentIcon.DELETE)
-        self.clear_btn.setToolTip("清空列表")
+        self.clear_btn.setToolTip("清空")
         control_layout.addWidget(self.clear_btn)
 
         control_layout.addStretch()
@@ -238,59 +299,68 @@ class QRCodePage(_Widget):
 
         main_layout.addLayout(control_layout)
 
-        # ── 左右分割器：图片列表 / 结果表格 ───────────
-        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        # ── 主体：左侧缩略图 + 右侧解码内容 ───────────
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(12)
 
-        # 左侧图片列表卡片
+        # 左侧：缩略图预览
         self.img_frame = QFrame()
         self.img_frame.setObjectName("qrImgFrame")
         img_layout = QVBoxLayout(self.img_frame)
-        img_layout.setContentsMargins(2, 2, 2, 2)
-        img_layout.setSpacing(0)
+        img_layout.setContentsMargins(12, 12, 12, 12)
+        img_layout.setSpacing(8)
 
-        img_header = QFrame()
-        img_header_layout = QHBoxLayout(img_header)
-        img_header_layout.setContentsMargins(12, 8, 12, 6)
-        img_header_layout.addWidget(CaptionLabel("图片列表 (支持拖拽 / Ctrl+V 粘贴)"))
-        img_header_layout.addStretch()
-        img_layout.addWidget(img_header)
+        img_layout.addWidget(CaptionLabel("二维码预览", self), alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.img_list = ImageDropList()
-        img_layout.addWidget(self.img_list, stretch=1)
+        self.preview_label = QLabel()
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(200, 200)
+        self.preview_label.setMaximumSize(260, 260)
+        self.preview_label.setText("拖拽或粘贴\n二维码图片")
+        self.preview_label.setWordWrap(True)
+        img_layout.addWidget(self.preview_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.splitter.addWidget(self.img_frame)
+        self.preview_name = CaptionLabel("", self)
+        self.preview_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_layout.addWidget(self.preview_name, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # 右侧结果表格卡片
+        body_layout.addWidget(self.img_frame)
+
+        # 右侧：解码结果展示
         self.result_frame = QFrame()
         self.result_frame.setObjectName("qrResultFrame")
         result_layout = QVBoxLayout(self.result_frame)
-        result_layout.setContentsMargins(2, 2, 2, 2)
-        result_layout.setSpacing(0)
+        result_layout.setContentsMargins(16, 16, 16, 16)
+        result_layout.setSpacing(12)
 
-        result_header = QFrame()
-        result_header_layout = QHBoxLayout(result_header)
-        result_header_layout.setContentsMargins(12, 8, 12, 6)
-        result_header_layout.addWidget(CaptionLabel("解码结果"))
-        result_header_layout.addStretch()
-        result_layout.addWidget(result_header)
+        # 状态
+        self.result_status = CaptionLabel("等待导入...", self)
+        self.result_status.setStyleSheet("font-size: 15px; font-weight: 600;")
+        result_layout.addWidget(self.result_status)
 
-        self.result_table = QTableWidget(self)
-        self.result_table.setColumnCount(3)
-        self.result_table.setHorizontalHeaderLabels(["文件名", "解码内容", "状态"])
-        self.result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.result_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.result_table.setWordWrap(True)
-        result_layout.addWidget(self.result_table, stretch=1)
+        # 解码内容文本框
+        self.result_content = QTextEdit(self)
+        self.result_content.setPlaceholderText("解码内容将显示在这里...")
+        self.result_content.setReadOnly(True)
+        result_layout.addWidget(self.result_content, stretch=1)
 
-        self.splitter.addWidget(self.result_frame)
-        self.splitter.setSizes([350, 450])
-        self.splitter.setHandleWidth(6)
+        # 操作按钮
+        btn_layout = QHBoxLayout()
+        self.copy_btn = PushButton("复制内容", self)
+        self.copy_btn.setIcon(FluentIcon.COPY)
+        self.open_link_btn = PushButton("打开链接", self)
+        self.open_link_btn.setIcon(FluentIcon.LINK)
+        self.open_link_btn.setVisible(False)
+        btn_layout.addWidget(self.copy_btn)
+        btn_layout.addWidget(self.open_link_btn)
+        btn_layout.addStretch()
+        result_layout.addLayout(btn_layout)
+
+        body_layout.addWidget(self.result_frame, stretch=1)
+        main_layout.addLayout(body_layout, stretch=1)
 
         # 延迟应用样式，确保在 qfluentwidgets 全局样式表之后生效
         QTimer.singleShot(0, self._apply_all_styles)
-
-        main_layout.addWidget(self.splitter, stretch=1)
 
     def _apply_all_styles(self):
         """根据当前主题统一应用所有样式。"""
@@ -299,14 +369,12 @@ class QRCodePage(_Widget):
         # 卡片背景
         card_bg = "#252525" if dark else "#e8f4fc"
         card_border = "#333333" if dark else "#d0e6f0"
-        # 列表/表格背景
+        # 内部背景
         inner_bg = "#1e1e1e" if dark else "#ffffff"
         inner_fg = "#e0e0e0" if dark else "#333333"
         # 表头
         header_bg = "#2a2a2a" if dark else "#d6eaf8"
         header_fg = "#e0e0e0" if dark else "#333333"
-        # Splitter handle
-        handle_bg = "#444444" if dark else "#d0d0d0"
 
         # 卡片样式
         card_css = f"""
@@ -319,86 +387,33 @@ class QRCodePage(_Widget):
         self.img_frame.setStyleSheet(card_css)
         self.result_frame.setStyleSheet(card_css)
 
-        # 图片列表样式
-        list_css = f"""
-            QListWidget {{
+        # 预览区占位文字颜色
+        self.preview_label.setStyleSheet(f"color: {'#888888' if dark else '#999999'}; font-size: 14px;")
+
+        # 解码内容文本框样式
+        content_css = f"""
+            QTextEdit {{
                 color: {inner_fg} !important;
                 background-color: {inner_bg} !important;
-                border: none;
-                padding: 8px;
-            }}
-            QListWidget::item {{
-                color: {inner_fg} !important;
-                background-color: transparent;
-                border-radius: 6px;
-                padding: 4px;
-            }}
-            QListWidget::item:selected {{
-                background-color: {'#3a3a3a' if dark else '#cce5ff'};
-                border-radius: 6px;
+                border: 1px solid {card_border};
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 14px;
+                font-family: 'Consolas', 'Microsoft YaHei', monospace;
             }}
         """
-        self.img_list.setStyleSheet(list_css)
-
-        # 表格样式
-        table_css = f"""
-            QTableWidget {{
-                color: {inner_fg} !important;
-                background-color: {inner_bg} !important;
-                border: none;
-                gridline-color: {'#333333' if dark else '#e0e0e0'};
-            }}
-            QHeaderView::section {{
-                color: {header_fg} !important;
-                background-color: {header_bg} !important;
-                padding: 6px 10px;
-                border: none;
-                border-bottom: 1px solid {'#444444' if dark else '#d0d0d0'};
-            }}
-            QTableView QTableCornerButton::section {{
-                background-color: {header_bg} !important;
-                border: none;
-            }}
-            QTableWidget::item {{
-                color: {inner_fg} !important;
-                background-color: {inner_bg} !important;
-                padding: 4px 8px;
-            }}
-            QTableWidget::item:selected {{
-                background-color: {'#3a3a3a' if dark else '#cce5ff'};
-            }}
-        """
-        self.result_table.setStyleSheet(table_css)
-
-        # Splitter handle
-        self.splitter.setStyleSheet(f"""
-            QSplitter::handle {{
-                background: {handle_bg};
-                width: 2px;
-                margin: 40px 0px;
-                border-radius: 1px;
-            }}
-        """)
+        self.result_content.setStyleSheet(content_css)
 
     def _on_theme_changed(self, theme):
         QTimer.singleShot(0, self._apply_all_styles)
 
     def _connect_signals(self):
         self.select_btn.clicked.connect(self._on_select_files)
-        self.img_list.filesDropped.connect(self._on_files_dropped)
-        self.img_list.itemsDeleted.connect(self._on_items_deleted)
+        self.copy_btn.clicked.connect(self._on_copy)
+        self.open_link_btn.clicked.connect(self._on_open_link)
         self.export_combo.currentIndexChanged.connect(self._on_export)
         self.clear_btn.clicked.connect(self._on_clear)
         qconfig.themeChanged.connect(self._on_theme_changed)
-
-    def _on_items_deleted(self, uids: list[str]):
-        """图片列表删除后同步移除对应解码结果。"""
-        removed = 0
-        for uid in uids:
-            if self._results.pop(uid, None):
-                removed += 1
-        self._refresh_table()
-        self.status_label.setText(f"共 {self.img_list.count()} 张 | 已移除 {removed} 项")
 
     # ── 文件处理 ────────────────────────────────────
 
@@ -410,21 +425,27 @@ class QRCodePage(_Widget):
             "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tiff);;所有文件 (*.*)",
         )
         if paths:
-            tasks = [(str(uuid.uuid4()), p) for p in paths]
-            self._add_images(tasks)
+            self._add_images(paths)
 
-    def _on_files_dropped(self, tasks: list[tuple[str, str]]):
-        self._add_images(tasks)
+    def _on_files_dropped(self, paths: list[str]):
+        self._add_images(paths)
 
-    def _add_images(self, tasks: list[tuple[str, str]]):
-        """添加图片到列表并启动解码。"""
-        valid_tasks: list[tuple[str, str]] = []
-        for uid, p in tasks:
+    def _add_images(self, paths: list[str]):
+        """添加图片到列表并启动解码（每次新导入自动清空之前的结果）。"""
+        # 清空之前的结果和UI
+        self._results = []
+        self.result_content.clear()
+        self.result_content.setPlaceholderText("解码内容将显示在这里...")
+        self.result_status.setText("正在解码...")
+        self.open_link_btn.setVisible(False)
+
+        valid_paths: list[str] = []
+        for p in paths:
             ext = Path(p).suffix.lower()
             if ext in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tiff", ".tif"}:
-                valid_tasks.append((uid, p))
+                valid_paths.append(p)
 
-        if not valid_tasks:
+        if not valid_paths:
             InfoBar.warning(
                 title="无有效图片",
                 content="未找到支持的图片格式",
@@ -436,21 +457,18 @@ class QRCodePage(_Widget):
             )
             return
 
-        # 添加到列表并显示缩略图
-        for uid, fp in valid_tasks:
-            pixmap = QPixmap(fp)
-            if pixmap.isNull():
-                continue
-            thumb = pixmap.scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            item = QListWidgetItem(thumb, os.path.basename(fp))
-            item.setData(Qt.ItemDataRole.UserRole, uid)
-            item.setToolTip(fp)
-            self.img_list.addItem(item)
+        # 显示第一张图片的缩略图
+        first_fp = valid_paths[0]
+        pixmap = QPixmap(first_fp)
+        if not pixmap.isNull():
+            thumb = pixmap.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.preview_label.setPixmap(thumb)
+            self.preview_name.setText(os.path.basename(first_fp))
 
-        self.status_label.setText(f"已导入 {self.img_list.count()} 张图片，正在解码...")
-        self._start_decode(valid_tasks)
+        self.status_label.setText(f"已导入 {len(valid_paths)} 张图片，正在解码...")
+        self._start_decode(valid_paths)
 
-    def _start_decode(self, tasks: list[tuple[str, str]]):
+    def _start_decode(self, paths: list[str]):
         if self._worker and self._worker.isRunning():
             return
         # 断开旧 worker 信号，避免重复连接
@@ -459,46 +477,48 @@ class QRCodePage(_Widget):
                 self._worker.finished.disconnect(self._on_decode_finished)
             except RuntimeError:
                 pass
-        self._worker = DecodeWorker(tasks, self)
+        self._worker = DecodeWorker(paths, self)
         self._worker.finished.connect(self._on_decode_finished)
         self._worker.start()
 
-    def _on_decode_finished(self, uid_results: list[tuple[str, DecodeResult]]):
-        for uid, r in uid_results:
-            self._results[uid] = r
-        self._refresh_table()
+    def _on_decode_finished(self, results: list[DecodeResult]):
+        self._results = results
 
-        success = sum(1 for r in self._results.values() if r.status == "成功")
-        fail = sum(1 for r in self._results.values() if r.status != "成功")
-        self.status_label.setText(
-            f"共 {self.img_list.count()} 张 | 成功 {success} / 失败 {fail}"
-        )
+        success = sum(1 for r in self._results if r.status == "成功")
+        fail = sum(1 for r in self._results if r.status != "成功")
+        self.status_label.setText(f"共 {len(results)} 张 | 成功 {success} / 失败 {fail}")
 
-        if any(r.status == "成功" for _, r in uid_results):
+        # 更新主展示区域（取第一个成功的结果）
+        success_results = [r for r in results if r.status == "成功"]
+        if success_results:
+            first = success_results[0]
+            self.result_status.setText(f"✅ 解码成功")
+            self.result_status.setStyleSheet("font-size: 15px; font-weight: 600; color: #28a745;")
+            self.result_content.setPlainText(first.content)
+            # 判断是否为链接
+            is_url = first.content.startswith(("http://", "https://"))
+            self.open_link_btn.setVisible(is_url)
+            if is_url:
+                self.open_link_btn.setProperty("url", first.content)
+        else:
+            # 取第一个结果展示失败原因
+            first = results[0] if results else None
+            if first:
+                self.result_status.setText(f"❌ {first.status}")
+                self.result_status.setStyleSheet("font-size: 15px; font-weight: 600; color: #dc3545;")
+                self.result_content.setPlainText("")
+            self.open_link_btn.setVisible(False)
+
+        if success > 0:
             InfoBar.success(
                 title="解码完成",
-                content=f"本批成功解码 {sum(1 for _, r in uid_results if r.status == '成功')} 个二维码",
+                content=f"成功解码 {success} 个二维码",
                 orient=Qt.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
                 duration=2000,
                 parent=self,
             )
-
-    def _refresh_table(self):
-        # 保存当前滚动位置，避免刷新后自动跳回顶部
-        vbar = self.result_table.verticalScrollBar()
-        scroll_value = vbar.value() if vbar else 0
-
-        self.result_table.setRowCount(len(self._results))
-        for i, r in enumerate(self._results.values()):
-            self.result_table.setItem(i, 0, QTableWidgetItem(self._ellipsize(r.filename)))
-            self.result_table.setItem(i, 1, QTableWidgetItem(r.content))
-            self.result_table.setItem(i, 2, QTableWidgetItem(r.status))
-
-        # 恢复滚动位置
-        if vbar:
-            vbar.setValue(scroll_value)
 
     @staticmethod
     def _ellipsize(text: str, max_len: int = 20) -> str:
@@ -522,7 +542,7 @@ class QRCodePage(_Widget):
         fmt = formats[index]
 
         # 只导出成功的结果
-        success_results = [r for r in self._results.values() if r.status == "成功"]
+        success_results = [r for r in self._results if r.status == "成功"]
         if not success_results:
             InfoBar.warning(
                 title="无数据",
@@ -609,10 +629,37 @@ class QRCodePage(_Widget):
     # ── 清空 ────────────────────────────────────────
 
     def _on_clear(self):
-        self.img_list.clear()
-        self.result_table.setRowCount(0)
-        self._results.clear()
+        self._results = []
+        self.result_content.clear()
+        self.result_content.setPlaceholderText("解码内容将显示在这里...")
+        self.result_status.setText("等待导入...")
+        self.result_status.setStyleSheet("font-size: 15px; font-weight: 600;")
+        self.preview_label.clear()
+        self.preview_label.setText("拖拽或粘贴\n二维码图片")
+        self.preview_name.setText("")
+        self.open_link_btn.setVisible(False)
         self.status_label.setText("等待导入...")
+
+    def _on_copy(self):
+        text = self.result_content.toPlainText()
+        if text:
+            clipboard = QApplication.clipboard()
+            if clipboard:
+                clipboard.setText(text)
+            InfoBar.success(
+                title="已复制",
+                content="解码内容已复制到剪贴板",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=1500,
+                parent=self,
+            )
+
+    def _on_open_link(self):
+        url = self.open_link_btn.property("url")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
 
 # 补全导入
