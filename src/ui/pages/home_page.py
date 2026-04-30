@@ -4,6 +4,7 @@ from PySide6.QtGui import QIcon
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import FluentWindow, NavigationItemPosition
 
+from services.settings_service import SettingsService
 from ui.pages.fhash_page import FileHashPage
 from ui.pages.json_page import JsonPage
 from ui.pages.qrcode_page import QRCodePage
@@ -25,6 +26,7 @@ class HomePage(FluentWindow):
 
         self.setui()
         self.initWindow()
+        self._switch_to_default_page()
 
     def setui(self):
 
@@ -38,6 +40,18 @@ class HomePage(FluentWindow):
             "应用设置",
             NavigationItemPosition.BOTTOM,
         )
+
+    def _switch_to_default_page(self):
+        """根据用户配置切换到默认页面。"""
+        svc = SettingsService()
+        mapping = {
+            "file_hash": self.CFHash,
+            "json": self.jsonInterface,
+            "qrcode": self.qrInterface,
+        }
+        target = mapping.get(svc.default_page)
+        if target:
+            self.switchTo(target)
 
     def initWindow(self):
         self.resize(800, 700)

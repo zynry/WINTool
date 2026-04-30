@@ -8,3 +8,5 @@ __pycache__
 .qoder
 build
 dist
+config/user_settings.json
+config/config.json

@@ -72,6 +72,21 @@ if __name__ == "__main__":
     # 必须在任何 ScrollArea / SmoothScrollArea 实例化之前完成 patch
     _patch_smooth_scroll_fps(app)
 
+    # 从用户配置加载主题并应用（覆盖 qconfig 的默认值）
+    from services.settings_service import SettingsService
+    from qfluentwidgets import Theme, setTheme, setThemeColor
+    from PySide6.QtGui import QColor
+
+    svc = SettingsService()
+    theme_map = {
+        "Light": Theme.LIGHT,
+        "Dark": Theme.DARK,
+        "Auto": Theme.AUTO,
+    }
+    theme = theme_map.get(svc.theme_mode, Theme.DARK)
+    setTheme(theme, save=False)
+    setThemeColor(QColor(svc.theme_color), save=False)
+
     # 延迟导入：确保 patch 在 UI 树构建前生效
     from ui.pages.home_page import HomePage
 
