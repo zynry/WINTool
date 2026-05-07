@@ -172,3 +172,8 @@ dist/WINTools/
 | 二维码解码 | 已完成 |
 | PyInstaller 打包 | 已完成 |
 | 其他工具模块 | 预留扩展 |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=star-history/star-history&type=date&theme=dark&legend=top-left" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=star-history/star-history&type=date&legend=top-left" />
+  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=star-history/star-history&type=date&legend=top-left" />
+</picture>
